@@ -172,6 +172,3 @@ Current verified result:
 - `raspberry_story/README.md`: original Python pipeline documentation
 - `raspberry_story/docs/`: Raspberry Pi installation and hardware guides
 
-## License
-
-Add a license before public redistribution if the repository contains third-party models, story pools or voice files.
