@@ -14,6 +14,8 @@ class StorytellingNode(Node):
         super().__init__('storytelling_node')
         self.declare_parameter('config', '/opt/imaginarium/raspberry_story/config.yaml')
         self.declare_parameter('language', 'it')
+        self.declare_parameter('device_id', 'imaginarium-device')
+        self.declare_parameter('conversation_state', str(Path.home() / 'imaginarium_conversation.json'))
         project_root = Path(str(self.get_parameter('config').value)).resolve().parent
         sys.path.insert(0, str(project_root))
         from imaginarium.cli import bootstrap
@@ -21,10 +23,18 @@ class StorytellingNode(Node):
         from imaginarium.story_cache import MultiLanguageStoryCache
         from imaginarium.tts import synthesize
         from imaginarium.audio_io import play_audio
+        from imaginarium.conversation import DeviceConversation, choose_available_story_index, story_prompt
         self.resolve_subject = resolve_subject
         self.MultiLanguageStoryCache = MultiLanguageStoryCache
         self.synthesize = synthesize
         self.play_audio = play_audio
+        self.DeviceConversation = DeviceConversation
+        self.choose_available_story_index = choose_available_story_index
+        self.story_prompt = story_prompt
+        device_id = str(self.get_parameter('device_id').value)
+        state_path = Path(str(self.get_parameter('conversation_state').value))
+        self.conversation_state = self.DeviceConversation.load(state_path, device_id=device_id)
+        self.conversation_state_path = state_path
 
         self.config = bootstrap(str(self.get_parameter('config').value))
         self.lang = str(self.get_parameter('language').value)
@@ -53,6 +63,14 @@ class StorytellingNode(Node):
             self.get_logger().warn('Story subject map missing')
             return
         profile = json.loads(msg.data)
+        toy_id = str(profile.get('toy_id', ''))
+        if toy_id:
+            self.conversation_state.mark_seen(toy_id)
+            axis = self.conversation_state.next_axis()
+            self.conversation_state.save(self.conversation_state_path)
+            prompt = self.story_prompt(toy_id, axis, self.conversation_state.seen_toy_ids, self.conversation_state.preferred_language)
+            self.publish_status('waiting_for_child', prompt)
+            return
         try:
             resolution = self.resolve_subject(
                 main_class=profile['main_class'], main_confidence=profile['confidence']['main'],
@@ -78,11 +96,38 @@ class StorytellingNode(Node):
         if not self.enabled:
             return
         text = msg.data.lower()
-        if any(word in text for word in ('smetti','stop','basta')):
+        if any(word in text for word in ('smetti', 'stop', 'basta')):
+            self.publish_status('paused', 'Conversation paused')
             return
-        prompt = 'Vuoi continuare questa storia, ascoltare di nuovo o incontrare un altro giocattolo?'
-        status = String(); status.data=json.dumps({'mode':'ask','text':prompt},ensure_ascii=False)
-        self.status_pub.publish(status)
+
+        state = self.conversation_state
+        affirmative = any(word in text for word in ('si', 'sì', 'yes', 'ok', 'vai', 'racconta', 'continu'))
+        negative = any(word in text for word in ('no', 'non', 'basta', 'non ora'))
+
+        if state.current_toy_id and affirmative:
+            axis = state.next_axis()
+            status = String()
+            status.data = json.dumps({
+                'mode': 'story_ready',
+                'toy_id': state.current_toy_id,
+                'axis': axis,
+                'text': f'Va bene. Racconto una storia nuova su {state.current_toy_id}, dedicata alla {axis}.',
+            }, ensure_ascii=False)
+            self.status_pub.publish(status)
+            state.chapter_count += 1
+            state.save(self.conversation_state_path)
+            return
+
+        if negative:
+            self.publish_status('waiting', 'Va bene. Posso proporre un’altra storia dopo.')
+            return
+
+        toy_id = state.current_toy_id
+        if toy_id:
+            prompt = self.story_prompt(toy_id, 'curiosita', state.seen_toy_ids, state.preferred_language)
+        else:
+            prompt = 'Saluta un giocattolo e mettilo davanti alla telecamera: posso conoscerlo e raccontare una sua storia.'
+        self.publish_status('waiting_for_child', prompt)
 
     def publish_status(self, state, detail):
         msg = String()

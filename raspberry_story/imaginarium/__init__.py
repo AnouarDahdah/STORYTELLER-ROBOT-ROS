@@ -19,8 +19,7 @@ Sottopackage/moduli:
     commands      i 3 comandi (run_button.py)
     tts           sintesi vocale (Piper)
     sysmon        statistiche CPU/RAM/temperatura (monitor_stats.py)
-    story         generazione storia via Ollama — percorso opzionale/dev
-    pipeline      orchestrazione storica a singola lingua via Ollama (dev)
+    conversation  stato conversazionale persistente, assi narrativi e continuita' fra giocattoli
 """
 
 from .config import AppConfig, load_config

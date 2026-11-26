@@ -136,3 +136,32 @@ Live ROS verification on 2026-11-26 confirmed:
 - Real TFLite identification remains unavailable because `models/hierarchy.json` and `model.tflite` are missing.
 - Storytelling remains unavailable because `models/subject_map.json` and Piper voices are missing.
 - This result validates ROS transport, degraded startup, power control, and persistent digital-twin storage—not real toy classification or spoken story playback.
+
+## 13. Conversazione continuativa per bambino
+
+Quando viene riconosciuto un giocattolo, il sistema:
+1. aggiorna il profilo digitale persistente;
+2. propone in voce una storia breve collegata al giocattolo;
+3. attende una risposta positiva del bambino;
+4. genera o seleziona una nuova storia solo dopo il consenso;
+5. ruota fra amicizia, coraggio, collaborazione, curiosità, gentilezza e responsabilità;
+6. evita di ripetere l’ultimo indice della storia quando sono disponibili alternative;
+7. può collegare personaggi già incontrati nello stesso dispositivo.
+
+Comandi test:
+
+```bash
+# Pubblica un profilo toy/profilo simulato
+python3 publish_identification.py
+
+# Risposte vocali simulabili via ROS2
+ros2 topic pub --once /conversation/request std_msgs/msg/String "{data: 'sì, racconta'}"
+ros2 topic pub --once /conversation/request std_msgs/msg/String "{data: 'no, un altra volta'}"
+ros2 topic pub --once /conversation/request std_msgs/msg/String "{data: 'basta'}"
+
+# Monitora proposta, racconto e eventi
+ros2 topic echo /story/status
+ros2 topic echo /toy/story_event
+```
+
+La scelta finale e le storie restano basate sul pool pre-generato fino all’aggiunta di un modello LLM locale controllato. Questo mantiene il sistema rapido, offline e adatto ai bambini.
