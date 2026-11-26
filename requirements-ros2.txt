@@ -1,0 +1,2 @@
+# Core ROS2 Python packages are installed by rosdep; this file is for runtime extras.
+vosk>=0.3.45

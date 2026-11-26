@@ -1,0 +1,154 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Configurazione della pipeline di produzione (Raspberry Pi 4).
+# I path relativi sono risolti rispetto alla cartella di questo file.
+# ─────────────────────────────────────────────────────────────────────────────
+
+paths:
+  models_root: models              # hierarchy.json + model.tflite (popolata da sync_to_production.py)
+  photos_dir: runtime/photos        # foto scattate a runtime
+  audio_dir: runtime/audio          # WAV generati a runtime (storia sintetizzata)
+  subject_map: models/subject_map.json   # etichetta grezza -> chiave del pool (tools/build_subject_map.py)
+  last_story: runtime/last_story.json    # quale storia ha raccontato l'ultimo comando 2 (per il comando 3)
+
+# Stessi parametri validati con:
+#   v4l2-ctl -d /dev/video0 --set-fmt-video=width=1920,height=1080,pixelformat=MJPG \
+#       --stream-mmap --stream-count=1 --stream-to=test.jpg
+camera:
+  device: /dev/video0
+  width: 1920
+  height: 1080
+  pixelformat: MJPG
+  timeout_s: 15
+
+# Stessi device validati con:
+#   arecord -D hw:3,0 -c 1 -f S16_LE -r 48000 -d 5 test.wav
+#   aplay   -D hw:2,0 test.wav
+audio:
+  record_device: hw:3,0            # microfono (webcam USB)
+  playback_device: "plughw:CARD=Device,DEV=0"  # cuffie (nome stabile, plughw per gestire mono/rate degli output Piper)
+  channels: 1
+  rate: 48000
+  format: S16_LE
+  record_seconds: 5.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NON richiesta per l'uso normale (comandi 1/2/3, run_button.py): quei
+# comandi pescano sempre dal pool pre-generato (sezione 'cache' e
+# 'languages' sotto) e non chiamano mai Ollama. Questa sezione resta solo
+# per due usi opzionali sul PC di sviluppo: 'run_pipeline.py' (percorso
+# storico a generazione live) e 'pregenerate_stories.py'/'bench_story.py'
+# (costruire o ampliare il pool). Su un Raspberry Pi dedicato ai 3 comandi
+# non serve installare Ollama — vedi docs/06_comandi_e_workflow.md.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Generazione storia via Ollama. Valori di partenza per gemma3:4b su CPU
+# (Raspberry Pi 4). Su questo hardware il limite e' la banda di memoria: il
+# tempo scala quasi linearmente con i token generati e con la taglia del
+# modello. Prima di ritarare a mano, misura:
+#
+#   python bench_story.py --preset baseline --repeat 3
+#   python bench_story.py --preset baseline --preset single_pass --preset fast --repeat 3
+#   python bench_story.py --list-presets
+#
+# Quando una configurazione convince, ricopia qui i suoi valori.
+story:
+  ollama_url: http://localhost:11434/api/generate
+  ollama_model: gemma3:4b
+  timeout_s: 300                   # l'inferenza CPU di un 4B puo' richiedere minuti
+  keep_alive: "10m"                # quanto Ollama tiene il modello in RAM fra una
+                                   # corsa e l'altra: ricaricarlo da disco costa
+                                   # secondi. "-1" = per sempre, "0" = scarica subito.
+
+  num_ctx: 2048
+  num_predict: 500
+  # num_thread: 4                  # i core fisici del Pi4; Ollama non sempre li satura
+  # num_batch: 128                 # batch di prompt eval; lascia il default se non misuri
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 40
+  repeat_penalty: 1.1
+  # seed: 42                       # decommenta per generazioni riproducibili
+  # stop: ["Fine.", "FINE"]        # sequenze che troncano la generazione
+
+  # Due passate = due generazioni complete, quindi circa il doppio del tempo.
+  # E' la leva singola piu' efficace sulla latenza; il prezzo e' una coerenza
+  # narrativa minore, che pesa di piu' quanto piu' il modello e' piccolo.
+  two_pass: true                   # prima il piano JSON, poi la prosa
+  plan_num_predict: 250
+  plan_temperature: 0.8
+  plan_max_retries: 0              # >0 solo se il JSON fallisce spesso: ogni
+                                   # ritentativo costa una generazione intera.
+                                   # Prima prova ad abbassare plan_temperature.
+
+  min_words: 80                    # sotto questa soglia la storia viene rigenerata
+  # target_words: 180              # lunghezza chiesta nel prompt; se assente e'
+                                   # max(min_words + 60, 180)
+  max_retries: 1
+  retry_growth: 2.0                # budget del tentativo n = num_predict * growth^(n-1);
+                                   # 1.0 = budget costante (ritentativi piu' rapidi)
+  accept_truncated: false          # true = una storia troncata a meta' frase viene
+                                   # accettata invece di far ripartire tutto
+
+  min_main_confidence: 0.55        # sotto: storia su un giocattolo generico
+  min_sub_confidence: 0.50         # sotto: storia sulla classe principale
+
+# Pool di storie pre-generate: la sola fonte usata dai comandi 1/2/3
+# (imaginarium/commands.py) tramite imaginarium/subjects.py +
+# story_cache.MultiLanguageStoryCache. Nessuna inferenza a runtime: la fase
+# "storia" e' una lettura da disco, millisecondi.
+#
+# 'fallback_subject' non serve piu' qui (subjects.py lo risolve da
+# models/subject_map.json, dove OGNI classe principale ha un bucket
+# verificato contro il pool): resta solo 'min_pool' e le opzioni sotto.
+cache:
+  enabled: true
+  path: runtime/stories_it.json    # usato solo dal percorso storico Ollama (run_pipeline.py)
+  min_pool: 3                      # sotto questa soglia il pool si ripeterebbe
+                                   # subito: si scende al bucket della classe
+                                   # principale (vedi subjects.resolve_subject)
+  fallback_subject: "gioco di imitazione"   # solo per il percorso storico (run_pipeline.py);
+                                   # prima era 'giocattolo', mai una chiave del pool: falliva
+                                   # sempre in silenzio e tornava a generare con Ollama
+  personalize_name: true           # cambia il nome del protagonista a ogni estrazione
+                                   # (stesso nome in tutte le lingue, vedi story_cache.py)
+  fallback_to_model: false         # true riattiva Ollama come ultima risorsa;
+                                   # richiede la sezione 'story' sopra e Ollama attivo
+
+# Sintesi vocale (Piper). Sezione base: motore/timeout/prosodia condivisi;
+# la voce qui sotto e' quella di default (usata da test_tts.py). Le 3 voci
+# effettive dei comandi sono in 'languages' sotto (vedi docs/04_tts_setup.md
+# per i link di download).
+tts:
+  engine: piper
+  piper_binary: piper              # eseguibile nel PATH (pip install piper-tts)
+  voice_model: voices/it_IT-paola-medium.onnx
+  voice_config: voices/it_IT-paola-medium.onnx.json
+  sample_rate: 22050
+  length_scale: 1.0                # >1 = più lenta, <1 = più veloce
+  noise_scale: 0.667
+  noise_w: 0.8
+  timeout_s: 120
+
+# Le 3 lingue usate dai comandi 1/2/3. Ogni lingua eredita motore/timeout/
+# prosodia dalla sezione 'tts' sopra e specifica solo la propria voce Piper
+# (vedi docs/04_tts_setup.md per il download) e il proprio pool di storie
+# (copie di lettura storie/stories2*.json, allineate per indice fra le
+# lingue: vedi docs/05_modelli_e_storie.md e imaginarium/story_cache.py).
+languages:
+  it:
+    story_pool: runtime/stories_it.json
+    voice_model: voices/it_IT-paola-medium.onnx
+    voice_config: voices/it_IT-paola-medium.onnx.json
+  en:
+    story_pool: runtime/stories_en.json
+    voice_model: voices/en_US-lessac-medium.onnx
+    voice_config: voices/en_US-lessac-medium.onnx.json
+  sl:
+    story_pool: runtime/stories_sl.json
+    voice_model: voices/sl_SI-artur-medium.onnx
+    voice_config: voices/sl_SI-artur-medium.onnx.json
+
+# Ordine di riproduzione del comando 1 (racconta in tutte le lingue).
+command1_languages: [it, en, sl]
+
+log_level: INFO

@@ -1,0 +1,18 @@
+identification_node:
+  ros__parameters:
+    config: /opt/imaginarium/raspberry_story/config.yaml
+storytelling_node:
+  ros__parameters:
+    config: /opt/imaginarium/raspberry_story/config.yaml
+    language: it
+digital_twin_node:
+  ros__parameters:
+    database: /var/lib/imaginarium/twins.sqlite3
+microphone_node:
+  ros__parameters:
+    record_device: default
+    record_seconds: 5.0
+power_control_node:
+  ros__parameters:
+    power_pin: 17
+    led_pin: 27

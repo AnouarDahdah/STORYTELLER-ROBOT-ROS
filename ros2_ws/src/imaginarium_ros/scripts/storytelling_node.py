@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+
+import json
+import sys
+from pathlib import Path
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+
+
+class StorytellingNode(Node):
+    def __init__(self):
+        super().__init__('storytelling_node')
+        self.declare_parameter('config', '/opt/imaginarium/raspberry_story/config.yaml')
+        self.declare_parameter('language', 'it')
+        project_root = Path(str(self.get_parameter('config').value)).resolve().parent
+        sys.path.insert(0, str(project_root))
+        from imaginarium.cli import bootstrap
+        from imaginarium.subjects import SubjectMap, resolve_subject
+        from imaginarium.story_cache import MultiLanguageStoryCache
+        from imaginarium.tts import synthesize
+        from imaginarium.audio_io import play_audio
+        self.resolve_subject = resolve_subject
+        self.MultiLanguageStoryCache = MultiLanguageStoryCache
+        self.synthesize = synthesize
+        self.play_audio = play_audio
+
+        self.config = bootstrap(str(self.get_parameter('config').value))
+        self.lang = str(self.get_parameter('language').value)
+        self.enabled = True
+        self.subject_map = None
+        self.create_subscription(String, 'device/power', self.power, 10)
+        self.create_subscription(String, 'toy/profile', self.tell_profile_story, 10)
+        self.create_subscription(String, 'conversation/request', self.conversation, 10)
+        self.story_pub = self.create_publisher(String, 'toy/story_event', 10)
+        self.status_pub = self.create_publisher(String, 'story/status', 10)
+        try:
+            self.subject_map = SubjectMap.load(self.config.paths.subject_map)
+            self.publish_status('ready', 'Subject map loaded')
+        except Exception as exc:
+            self.publish_status('degraded', f'Story assets unavailable: {exc}')
+            self.get_logger().warn(str(exc))
+
+    def power(self, msg):
+        self.enabled = msg.data != 'off'
+
+    def tell_profile_story(self, msg):
+        if not self.enabled:
+            return
+        if self.subject_map is None:
+            self.publish_status('degraded', 'Story subject map missing')
+            self.get_logger().warn('Story subject map missing')
+            return
+        profile = json.loads(msg.data)
+        try:
+            resolution = self.resolve_subject(
+                main_class=profile['main_class'], main_confidence=profile['confidence']['main'],
+                sub_class=profile['sub_class'] if profile['sub_class'] != profile['main_class'] else None,
+                sub_confidence=profile['confidence']['sub'], subject_map=self.subject_map,
+                min_main_confidence=self.config.story.min_main_confidence,
+                min_sub_confidence=self.config.story.min_sub_confidence)
+            cache = self.MultiLanguageStoryCache.load({self.lang: self.config.language(self.lang).story_pool})
+            pick = cache.pick_synced(resolution.pool_key, self.config.cache, languages=[self.lang])
+            if pick is None:
+                raise RuntimeError('No story available for ' + resolution.pool_key)
+            story = pick.stories[self.lang]
+            out = self.config.paths.audio_dir / ('ros2_' + profile['toy_id'].replace(' ', '_') + '_' + str(pick.index) + '.wav')
+            self.synthesize(story.text, out, self.config.language(self.lang).tts)
+            self.play_audio(self.config.audio, out)
+            event = {'event_type':'story_started','toy_id':profile['toy_id'],'pool_key':resolution.pool_key,
+                     'story_index':pick.index,'text':story.text,'audio':str(out)}
+            m = String(); m.data=json.dumps(event,ensure_ascii=False); self.story_pub.publish(m)
+        except Exception as exc:
+            self.get_logger().error('Storytelling failed: %s', exc)
+
+    def conversation(self, msg):
+        if not self.enabled:
+            return
+        text = msg.data.lower()
+        if any(word in text for word in ('smetti','stop','basta')):
+            return
+        prompt = 'Vuoi continuare questa storia, ascoltare di nuovo o incontrare un altro giocattolo?'
+        status = String(); status.data=json.dumps({'mode':'ask','text':prompt},ensure_ascii=False)
+        self.status_pub.publish(status)
+
+    def publish_status(self, state, detail):
+        msg = String()
+        msg.data = json.dumps({'state': state, 'detail': detail}, ensure_ascii=False)
+        self.status_pub.publish(msg)
+
+
+def main():
+    rclpy.init()
+    node=StorytellingNode()
+    rclpy.spin(node)
+    node.destroy_node(); rclpy.shutdown()
+
+if __name__=='__main__':
+    main()

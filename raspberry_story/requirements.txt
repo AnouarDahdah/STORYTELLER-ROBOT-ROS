@@ -1,0 +1,21 @@
+pyyaml>=6.0
+numpy>=1.24
+pillow>=10.0
+
+# Runtime di inferenza TFLite. Su Raspberry Pi OS (Debian bookworm) le wheel
+# di tflite-runtime non sono sempre disponibili per ogni versione di Python:
+# se l'installazione fallisce, prova in alternativa una di queste due righe
+# (decommenta quella che funziona sul tuo sistema):
+# tflite-runtime>=2.14; platform_machine == "aarch64"  # nessuna wheel per Python 3.13 su questo Pi
+ai-edge-litert>=1.0          # successore ufficiale di tflite-runtime
+# tensorflow>=2.13             # fallback pesante ma sempre disponibile (wheel aarch64 su piwheels)
+
+# Sintesi vocale (fornisce l'eseguibile `piper` usato da imaginarium/tts.py)
+piper-tts>=1.2
+
+# Monitor risorse (monitor_stats.py / imaginarium/sysmon.py)
+psutil>=5.9
+
+# Facoltativi
+# pytest>=8.0                  # test unitari sui moduli puri (config, subjects, story_cache, state)
+# requests>=2.31                # solo per Traduzione storie/translate_stories.py (dev, non sul Pi)
